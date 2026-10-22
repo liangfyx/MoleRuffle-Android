@@ -8,6 +8,22 @@
 
 ---
 
+## 截屏
+
+| 版本选择 | 登录 / 主页 |
+|---|---|
+| ![](docs/screenshots/01-version.jpg) | ![](docs/screenshots/02-login.jpg) |
+
+| 游戏内（淘淘乐街） | 图像设置 |
+|---|---|
+| ![](docs/screenshots/04-world.jpg) | ![](docs/screenshots/03-settings.jpg) |
+
+| 控件与按键 |
+|---|
+| ![](docs/screenshots/05-controls.jpg) |
+
+---
+
 ## 致谢
 
 - [**moleworld-dev/MoleRuffle**](https://github.com/moleworld-dev/MoleRuffle) —— 本项目的基础：Ruffle 原生客户端骨架、原生 TCP 直连、资源加载加固。**没有它就没有这个 Android 版**。
