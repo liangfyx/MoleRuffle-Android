@@ -1,6 +1,6 @@
 # MoleRuffle Android
 
-把 **摩尔庄园网页版**(`mole.61player.com`) 跑在 Android 上的**原生客户端**——基于 [Ruffle](https://github.com/ruffle-rs/ruffle) 引擎（Rust + wgpu），**非 WASM、非 WebView**，直接原生渲染 + 原生 TCP。
+把 **摩尔庄园网页版**（官方 Flash 客户端）跑在 Android 上的**原生客户端**——基于 [Ruffle](https://github.com/ruffle-rs/ruffle) 引擎（Rust + wgpu），**非 WASM、非 WebView**，直接原生渲染 + 原生 TCP。
 
 本项目衍生自 [**moleworld-dev/MoleRuffle**](https://github.com/moleworld-dev/MoleRuffle)（跨平台原生客户端），聚焦 **Android 移植 + 兼容性/稳定性/性能修复**。
 
@@ -23,7 +23,7 @@
 - 原生 TCP + 本地代理桥（`local_proxy`），打通登录 / 地图 / 走路协议；
 - 触屏控件（虚拟摇杆、按键布局、可拖拽 / 隐藏）、全屏沉浸、性能 HUD、渲染分辨率档位。
 
-### 稳定性 / 兼容性修复（对 Ruffle 的改动见 `patches/ruffe-android-fixes.patch`）
+### 稳定性 / 兼容性修复（对 Ruffle 的改动见 `patches/ruffle-android-fixes.patch`）
 | 修复 | 说明 |
 |---|---|
 | AVM2 递归深度守卫 + 自噬修复 | 防深递归爆栈闪退；并修复「守卫抛错 → 造错误又走 exec → 无限递归」的自噬循环 |
@@ -42,7 +42,7 @@
 ## 构建（Android）
 
 ```bash
-# 1. 准备 ruffle 源码（pin 的版本 304a3c9d），并应用 patches/ruffe-android-fixes.patch
+# 1. 准备 ruffle 源码（pin 的版本 304a3c9d），并应用 patches/ruffle-android-fixes.patch
 #    android/Cargo.toml 通过 path 引用 ../../ruffle-src
 # 2. 编译 .so
 cd android
