@@ -1,0 +1,303 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MoleRuffle 游戏覆盖层:
+    · 全屏游戏 SurfaceView(placeholder,运行时被替换成游戏画面)
+    · 虚拟手柄面板 gamepad_panel(左下十字方向键 + 右下空格),可切换显隐,空白区触摸穿透给游戏
+    · 常驻控制钮:button_toggle(手柄开关)、button_ime(系统软键盘)
+    · 性能监视 HUD perf_hud(左上,等宽绿字)
+  官方那套占屏 QWERTY 键盘 + 左下角 ⌨/▤ 工具条已移除。
+-->
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/topLevel"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    tools:ignore="HardcodedText">
+
+    <!-- 游戏画面(全屏)。运行时 onCreateSurfaceView 会把它替换成 InputEnabledSurfaceView。 -->
+    <SurfaceView
+        android:id="@+id/placeholder"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- 虚拟手柄面板:全屏透明容器,不吃触摸(空白处穿透给游戏),只有里面的按钮吃触摸。 -->
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/gamepad_panel"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:clickable="false"
+        android:focusable="false"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <!-- 十字方向键(左下角,3×3 网格中心空)。tag 复用官方注入通道 UP/DOWN/LEFT/RIGHT。 -->
+        <Button
+            android:id="@+id/button_up"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:background="@drawable/gamepad_btn"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:padding="0dp"
+            android:stateListAnimator="@null"
+            android:tag="UP"
+            android:text="↑"
+            android:textColor="#FFFFFF"
+            android:textSize="26sp"
+            android:textStyle="bold"
+            android:textAllCaps="false"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            android:layout_marginStart="88dp"
+            android:layout_marginBottom="152dp" />
+
+        <Button
+            android:id="@+id/button_left"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:background="@drawable/gamepad_btn"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:padding="0dp"
+            android:stateListAnimator="@null"
+            android:tag="LEFT"
+            android:text="←"
+            android:textColor="#FFFFFF"
+            android:textSize="26sp"
+            android:textStyle="bold"
+            android:textAllCaps="false"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            android:layout_marginStart="24dp"
+            android:layout_marginBottom="88dp" />
+
+        <Button
+            android:id="@+id/button_right"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:background="@drawable/gamepad_btn"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:padding="0dp"
+            android:stateListAnimator="@null"
+            android:tag="RIGHT"
+            android:text="→"
+            android:textColor="#FFFFFF"
+            android:textSize="26sp"
+            android:textStyle="bold"
+            android:textAllCaps="false"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            android:layout_marginStart="152dp"
+            android:layout_marginBottom="88dp" />
+
+        <Button
+            android:id="@+id/button_down"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:background="@drawable/gamepad_btn"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:padding="0dp"
+            android:stateListAnimator="@null"
+            android:tag="DOWN"
+            android:text="↓"
+            android:textColor="#FFFFFF"
+            android:textSize="26sp"
+            android:textStyle="bold"
+            android:textAllCaps="false"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            android:layout_marginStart="88dp"
+            android:layout_marginBottom="24dp" />
+
+        <!-- 空格键(右下,空格常用于摩尔庄园交互/跳)。 -->
+        <Button
+            android:id="@+id/button_space"
+            android:layout_width="150dp"
+            android:layout_height="64dp"
+            android:background="@drawable/gamepad_btn"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:padding="0dp"
+            android:stateListAnimator="@null"
+            android:tag="SPACE"
+            android:text="空格"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textAllCaps="false"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            android:layout_marginEnd="112dp"
+            android:layout_marginBottom="24dp" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <!-- 摇杆「跟随手指」模式的触发区(左下区域,王者那种按哪儿摇杆就出现在哪儿)。
+         ★ 只有开了跟随模式才会 VISIBLE,否则 GONE —— 免得平时挡住游戏点击。
+         ★ Z 值刻意低于手柄面板(870)和摇杆(885):这样方向键/空格键仍然优先吃触摸,
+           触发区只在"空白处按下"时才接管。 -->
+    <View
+        android:id="@+id/joystick_zone"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintWidth_percent="0.45"
+        app:layout_constraintHeight_percent="0.75" />
+
+    <!-- 虚拟摇杆:按住拖动 → 持续输出 ↑↓←→(与十字方向键同一条注入通道),松手回中。
+         放在左下方向键上方,可在「调整布局」里挪位置;设置里可整体开关。 -->
+    <FrameLayout
+        android:id="@+id/joystick_panel"
+        android:layout_width="120dp"
+        android:layout_height="120dp"
+        android:background="@drawable/joystick_base"
+        android:clickable="true"
+        android:focusable="false"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        android:layout_marginStart="24dp"
+        android:layout_marginBottom="180dp">
+
+        <View
+            android:id="@+id/joystick_knob"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="center"
+            android:background="@drawable/joystick_knob" />
+    </FrameLayout>
+
+    <!-- 常驻:性能 HUD 显隐开关(帧率/内存/温度/网络那块绿字)。
+         ★ 用 ImageButton + scaleType=center:Button 的 compoundDrawable 只会贴在
+           起始边,gravity=center 也居中不了(只居中文字),所以之前图标偏左。 -->
+    <androidx.appcompat.widget.AppCompatImageButton
+        android:id="@+id/button_hud"
+        android:layout_width="56dp"
+        android:layout_height="48dp"
+        android:background="@drawable/gamepad_toggle"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:padding="0dp"
+        android:stateListAnimator="@null"
+        android:scaleType="center"
+        android:tint="#FFFFFFFF"
+        app:srcCompat="@drawable/ic_chart"
+        android:src="@drawable/ic_chart"
+        android:contentDescription="状态框开关"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginEnd="40dp"
+        android:layout_marginBottom="204dp" />
+
+    <!-- 常驻:系统软键盘钮(点一下弹出/收起系统输入法)。 -->
+    <androidx.appcompat.widget.AppCompatImageButton
+        android:id="@+id/button_ime"
+        android:layout_width="56dp"
+        android:layout_height="48dp"
+        android:background="@drawable/gamepad_toggle"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:padding="0dp"
+        android:stateListAnimator="@null"
+        android:scaleType="center"
+        android:tint="#FFFFFFFF"
+        app:srcCompat="@drawable/ic_keyboard"
+        android:src="@drawable/ic_keyboard"
+        android:contentDescription="软键盘开关"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginEnd="40dp"
+        android:layout_marginBottom="144dp" />
+
+    <!-- 常驻:手柄显隐开关。 -->
+    <androidx.appcompat.widget.AppCompatImageButton
+        android:id="@+id/button_toggle"
+        android:layout_width="56dp"
+        android:layout_height="48dp"
+        android:background="@drawable/gamepad_toggle"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:padding="0dp"
+        android:stateListAnimator="@null"
+        android:scaleType="center"
+        android:tint="#FFFFFFFF"
+        app:srcCompat="@drawable/ic_gamepad"
+        android:src="@drawable/ic_gamepad"
+        android:contentDescription="手柄显隐开关"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginEnd="40dp"
+        android:layout_marginBottom="24dp" />
+
+    <!-- MoleRuffle:常驻「摇杆开关」—— 一键显/隐虚拟摇杆(不用进设置),
+         长按可拖动换位(位置自动保存),图标样式与其它常驻钮一致。 -->
+    <androidx.appcompat.widget.AppCompatImageButton
+        android:id="@+id/button_joystick_toggle"
+        android:layout_width="56dp"
+        android:layout_height="48dp"
+        android:background="@drawable/gamepad_toggle"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:padding="0dp"
+        android:stateListAnimator="@null"
+        android:scaleType="center"
+        android:tint="#FFFFFFFF"
+        app:srcCompat="@drawable/ic_joystick"
+        android:src="@drawable/ic_joystick"
+        android:contentDescription="摇杆显隐开关"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginEnd="40dp"
+        android:layout_marginBottom="84dp" />
+
+    <!-- 悬浮设置球:点按弹设置面板(版本/按键显隐/状态框),默认可直接拖动换位。 -->
+    <androidx.appcompat.widget.AppCompatImageButton
+        android:id="@+id/button_settings"
+        android:layout_width="52dp"
+        android:layout_height="52dp"
+        android:background="@drawable/gamepad_toggle"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:padding="0dp"
+        android:stateListAnimator="@null"
+        android:scaleType="center"
+        android:tint="#FFFFFFFF"
+        app:srcCompat="@drawable/ic_settings"
+        android:src="@drawable/ic_settings"
+        android:contentDescription="设置"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        android:layout_marginEnd="6dp" />
+
+    <!-- 性能监视 HUD(左上,等宽绿字黑底半透明)。默认隐藏,由 button_toggle 长按或独立逻辑控制;这里默认显示。 -->
+    <TextView
+        android:id="@+id/perf_hud"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/hud_bg"
+        android:clickable="false"
+        android:focusable="false"
+        android:fontFamily="monospace"
+        android:paddingHorizontal="8dp"
+        android:paddingVertical="4dp"
+        android:text=""
+        android:textColor="#00FF66"
+        android:textSize="12sp"
+        android:lineSpacingExtra="1dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        android:layout_marginStart="44dp"
+        android:layout_marginTop="24dp" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>

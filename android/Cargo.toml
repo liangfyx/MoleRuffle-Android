@@ -1,0 +1,76 @@
+[package]
+# Underscore because the cargo-ndk gradle plugin doesn't transform a hyphen to it.
+name = "ruffle_android"
+version = "0.1.0"
+authors = [
+    "Ruffle contributors <ruffle@ruffle.rs>",
+    "TÖRÖK Attila <torokati44@gmail.com>",
+    "Nathan Adams <dinnerbone@dinnerbone.com>",
+]
+edition = "2018"
+resolver = "2"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+# 全局保持全剥离(依赖包的构建脚本指纹不动,不重跑 rustix 的探测 —— 那套探测会挂)。
+strip = "symbols"
+
+# ★ 只对最终产物包保留符号表:strip="debuginfo" = 去 DWARF 行号、留 .symtab。
+#   之前 strip="symbols" 把符号表整个剥掉,小米给的 512 层崩溃栈只有裸地址没法定位;
+#   保留符号表后,以后的崩溃地址用 llvm-symbolizer 直接查函数名。
+#   放包级而不是全局:依赖(rustix 等)的构建脚本缓存不用重跑(它们的探测会因环境报 231)。
+[profile.release.package.ruffle_android]
+strip = "debuginfo"
+
+[dependencies]
+
+android-activity = { version = "0.6.0", features = ["game-activity"] }
+android_logger = "0.15.1"
+
+jni = "0.21.1"
+ndk = { version = "0.9.0", features = ["audio"] }
+ndk-context = "0.1.1"
+
+# Have to follow Ruffle with this.
+# MoleRuffle:不再直接依赖 wgpu —— 走 ruffle_render_wgpu 的 re-export,统一版本
+# (否则新版 ruffle 和这里的 wgpu 版本不同,SurfaceTargetUnsafe 等类型对不上)。
+
+ruffle_common = { path = "../../ruffle-src/core/common" }
+ruffle_core = { path = "../../ruffle-src/core", features = [
+    "audio",
+    "symphonia",
+    "mp3",
+    "nellymoser",
+    "lzma",
+    "default_compatibility_rules",
+    "default_font",
+] }
+ruffle_render = { path = "../../ruffle-src/render" }
+ruffle_render_wgpu = { path = "../../ruffle-src/render/wgpu" }
+ruffle_video_software = { path = "../../ruffle-src/video/software" }
+ruffle_frontend_utils = { path = "../../ruffle-src/frontend-utils", default-features = false, features = ["fs", "navigator", "rustls-tls"] }
+
+log = "0.4.32"
+
+# Redirect tracing to log
+tracing = {version = "0.1.44", features = ["log", "log-always"]}
+backtrace = "0.3.76"
+async-task = "4.7.1"
+
+url = "2.5.2"
+webbrowser = "1.1.0"
+
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"]}
+
+[features]
+jpegxr = ["ruffle_core/jpegxr"]
+
+# so Rascal doesn't pull in another copy of swf from crates.io
+[patch.crates-io]
+swf = { path = "../../ruffle-src/swf" }
+
+# MoleRuffle:独立 workspace 根,避免并入上层 MoleRuffle workspace 引发冲突。
+[workspace]

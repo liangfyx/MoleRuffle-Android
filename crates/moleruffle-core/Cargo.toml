@@ -1,0 +1,32 @@
+[package]
+name = "moleruffle-core"
+description = "MoleRuffle 跨平台共享核心:摩尔庄园专属配置、Player 装配、域名守卫 spoof、socket 放行、中文字体回退"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ruffle_core.workspace = true
+ruffle_render.workspace = true   # StageQuality(画质/MSAA 档位)
+ruffle_frontend_utils.workspace = true
+url.workspace = true
+tracing.workspace = true
+# SharedObject(“记住账号”等本地存储)磁盘持久化的目录定位(五端通用)
+dirs.workspace = true
+# 设备字体:用系统字体库(mac=PingFang / win=YaHei / iOS=PingFang / Android=Noto CJK)
+fontdb = "0.23"
+unic-langid = "0.9"
+# 本地资源缓存(CachingNavigator 包装层)需要的、与 ruffle 对齐的类型/版本
+encoding_rs = "0.8"
+indexmap = "2"
+async-channel = "2"
+
+# 系统剪贴板(复制粘贴)。桌面用 arboard。
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+arboard = "3"
+
+# iOS 系统剪贴板用 UIPasteboard(objc2)。版本对齐 winit 已用的 objc2 0.5.2 套,不引入新版本。
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-foundation = { version = "0.2.2", features = ["NSString"] }
+objc2-ui-kit = { version = "0.2.2", features = ["UIPasteboard"] }

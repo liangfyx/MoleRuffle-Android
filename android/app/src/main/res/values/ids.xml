@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 虚拟按键拖动状态挂载点(view 双 tag 之一) -->
+    <item name="pad_drag_state" type="id" />
+    <!-- 是否已抬升绘制层级(拖动时避免被手柄按键盖住) -->
+    <item name="pad_raised" type="id" />
+</resources>

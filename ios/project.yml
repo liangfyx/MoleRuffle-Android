@@ -1,0 +1,43 @@
+# xcodegen 工程定义:生成一个最小 iOS app 工程,自动签名,
+# 把预编译的 Rust 二进制(target/aarch64-apple-ios/debug/moleruffle)注入为 .app 可执行体。
+# 用途:真机部署(开发签名)。生成的 .xcodeproj 不入库。
+name: MoleRuffle
+options:
+  bundleIdPrefix: com.moleworld
+  deploymentTarget:
+    iOS: "15.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: JV2TTWR28G
+    CODE_SIGN_STYLE: Automatic
+targets:
+  MoleRuffle:
+    type: application
+    platform: iOS
+    sources:
+      - path: Stub
+      - path: LaunchScreen.storyboard
+      - path: Assets.xcassets
+    settings:
+      base:
+        PRODUCT_NAME: moleruffle
+        PRODUCT_BUNDLE_IDENTIFIER: com.moleworld.moleruffle
+        INFOPLIST_FILE: Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_BITCODE: NO
+        STRIP_INSTALLED_PRODUCT: NO
+        COPY_PHASE_STRIP: NO
+        SUPPORTS_MACCATALYST: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        # 提升内存上限的 entitlement(把 jetsam per-process 墙从 ~3.4GB 抬到 ~9GB)。
+        # xcodebuild 会把它合进 moleruffle.app.xcent,后续强制重签名也带上。
+        CODE_SIGN_ENTITLEMENTS: MoleRuffle.entitlements
+    postCompileScripts:
+      - name: "注入 Rust 二进制"
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          BIN="$SRCROOT/../target/aarch64-apple-ios/release/moleruffle"
+          echo "注入 $BIN -> $TARGET_BUILD_DIR/$EXECUTABLE_PATH"
+          cp "$BIN" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"

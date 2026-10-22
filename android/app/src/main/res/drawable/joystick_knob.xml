@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 虚拟摇杆帽:白色圆 + 蓝色描边 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="#DDFFFFFF" />
+    <stroke
+        android:width="2dp"
+        android:color="#FF2196F3" />
+</shape>

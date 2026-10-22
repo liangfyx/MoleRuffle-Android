@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MoleRuffle:摇杆图标 —— 外圈 + 中央杆头,一眼认出是虚拟摇杆。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 外圈 -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.8"
+        android:fillColor="#00000000"
+        android:pathData="M12,2.5A9.5,9.5 0 1,1 2.5,12A9.5,9.5 0 1,1 12,2.5z" />
+    <!-- 中央杆头 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,8.2A3.8,3.8 0 1,1 8.2,12A3.8,3.8 0 1,1 12,8.2z" />
+    <!-- 方向刻度(上下左右小点) -->
+    <path android:fillColor="#FFFFFF" android:pathData="M12,4.4a1.1,1.1 0 1,1 -1.1,1.1A1.1,1.1 0 0,1 12,4.4z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M12,18.5a1.1,1.1 0 1,1 -1.1,1.1A1.1,1.1 0 0,1 12,18.5z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M4.4,12a1.1,1.1 0 1,1 1.1,-1.1A1.1,1.1 0 0,1 4.4,12z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M18.5,12a1.1,1.1 0 1,1 1.1,-1.1A1.1,1.1 0 0,1 18.5,12z" />
+</vector>

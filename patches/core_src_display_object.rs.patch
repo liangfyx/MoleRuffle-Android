@@ -1,0 +1,13 @@
+diff --git a/core/src/display_object.rs b/core/src/display_object.rs
+index 64e3a3258..6e69b775f 100644
+--- a/core/src/display_object.rs
++++ b/core/src/display_object.rs
+@@ -31,7 +31,7 @@ use swf::{ColorTransform, Fixed8};
+ mod avm1_button;
+ mod avm2_button;
+ mod bitmap;
+-mod container;
++pub(crate) mod container;
+ mod edit_text;
+ mod graphic;
+ mod interactive;

@@ -1,0 +1,36 @@
+diff --git a/core/src/frame_lifecycle.rs b/core/src/frame_lifecycle.rs
+index 91bdb52df..2f4ef3831 100644
+--- a/core/src/frame_lifecycle.rs
++++ b/core/src/frame_lifecycle.rs
+@@ -13,6 +13,7 @@
+ 
+ use crate::avm2::{Avm2, EventObject};
+ use crate::context::UpdateContext;
++use crate::display_object::container::TDisplayObjectContainer;
+ use crate::display_object::{DisplayObject, MovieClip, TDisplayObject};
+ use crate::loader::LoadManager;
+ use crate::orphan_manager::OrphanManager;
+@@ -131,6 +132,23 @@ pub fn run_inner_goto_frame<'gc>(
+         // queued for our target frame.
+         initial_clip.base().set_skip_next_enter_frame(true);
+ 
++        // ★ MoleRuffle:version 9 的 AVM2 goto 原本直接 return,跳过了 construct_frame,
++        //   导致 run_goto 刚放置的子对象(如拉姆教室 CoursesPlan 的 tips)的 AVM2 槽没绑定,
++        //   帧脚本 frame2 访问 `tips.visible` 时拿到 null(Error #1009)→ 报错中断 →
++        //   字色没设(全黑)、布局没排(堆叠)、数据没填(999/9999 默认值)。
++        //   这里在返回前补跑 construct_frame,并**强制构造被 manual_frame_construct 守卫
++        //   跳过的子对象**(直接调 child.construct_frame),让 tips 等建出 AVM2 对象、
++        //   经 on_construction_complete → set_on_parent_field 绑上父槽。
++        let old_phase = *context.frame_phase;
++        *context.frame_phase = FramePhase::Construct;
++        initial_clip.construct_frame(context);
++        for child in initial_clip.iter_render_list() {
++            if child.object2().is_none() {
++                child.construct_frame(context);
++            }
++        }
++        *context.frame_phase = old_phase;
++
+         return;
+     }
+ 

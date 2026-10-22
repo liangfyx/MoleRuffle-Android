@@ -1,0 +1,795 @@
+diff --git a/core/src/avm2/function.rs b/core/src/avm2/function.rs
+index f6a511ef6..c6744ffac 100644
+--- a/core/src/avm2/function.rs
++++ b/core/src/avm2/function.rs
+@@ -1,6 +1,6 @@
+ use crate::avm2::Multiname;
+ use crate::avm2::activation::Activation;
+-use crate::avm2::error::{Error, make_error_1001};
++use crate::avm2::error::{Error, make_error_1001, make_error_1023};
+ use crate::avm2::method::{Method, MethodKind, ParamConfig};
+ use crate::avm2::object::{ClassObject, FunctionObject};
+ use crate::avm2::scope::ScopeChain;
+@@ -231,6 +231,47 @@ impl<'a, 'gc> DoubleEndedIterator for FunctionArgsIter<'a, 'gc> {
+ ///
+ /// It is the caller's responsibility to ensure that the `receiver` passed
+ /// to this method is not Value::Null or Value::Undefined.
++// ★ MoleRuffle:AVM2 方法调用递归深度守卫 —— 防止深/无限递归把 Rust 栈真的爆掉导致闪退。
++//   超过上限就抛 AVM2 Error #1023 "Stack overflow occurred."(与 Flash 行为一致),而不是真爆栈。
++//   实测某次崩溃在 170 层 AVM2 调用(512 个 Rust 帧)处爆栈,故上限取 128 层留安全余量
++//   (正常 AS3 递归极少超过 50~100 层)。
++thread_local! {
++    static AVM2_CALL_DEPTH: Cell<u32> = const { Cell::new(0) };
++    // ★ MoleRuffle:正在构造错误对象时置位 —— 构造 AVM2 Error 会经 ErrorObject::from_info
++    //   → function::exec(Error 构造函数);若此时又被递归守卫拒绝,就会"守卫抛错 → 构造错误
++    //   → 又被拒 → 又抛错"无限递归造错误,最终在格式化错误消息时 malloc 到 OOM(scudo 崩,
++    //   崩在 alloc::fmt / scudo::HybridMutex)。故构造错误期间放行守卫,避免自噬。
++    static AVM2_ERROR_CONSTRUCTING: Cell<bool> = const { Cell::new(false) };
++}
++const MAX_AVM2_CALL_DEPTH: u32 = 128;
++
++struct CallDepthGuard {
++    tracked: bool,
++}
++impl CallDepthGuard {
++    /// 进入一层调用;已达上限则返回 Err(不再加深)。
++    fn enter() -> Result<Self, ()> {
++        // 构造错误对象期间直接放行(不计深度、不检查),打断"守卫↔造错误"的自噬递归。
++        if AVM2_ERROR_CONSTRUCTING.with(|s| s.get()) {
++            return Ok(Self { tracked: false });
++        }
++        AVM2_CALL_DEPTH.with(|d| {
++            if d.get() >= MAX_AVM2_CALL_DEPTH {
++                return Err(());
++            }
++            d.set(d.get() + 1);
++            Ok(Self { tracked: true })
++        })
++    }
++}
++impl Drop for CallDepthGuard {
++    fn drop(&mut self) {
++        if self.tracked {
++            AVM2_CALL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
++        }
++    }
++}
++
+ pub fn exec<'gc>(
+     method: Method<'gc>,
+     scope: ScopeChain<'gc>,
+@@ -242,6 +283,18 @@ pub fn exec<'gc>(
+ ) -> Result<Value<'gc>, Error<'gc>> {
+     let mc = activation.gc();
+ 
++    // ★ MoleRuffle:递归守卫 —— 超上限抛 #1023,避免栈溢出闪退。抛错前置 AVM2_ERROR_CONSTRUCTING,
++    //   让"构造这个错误对象"的过程不再被守卫拦截,否则陷入"守卫抛错→造错误→又被拒→再抛错"自噬递归。
++    let _call_depth = match CallDepthGuard::enter() {
++        Ok(g) => g,
++        Err(()) => {
++            AVM2_ERROR_CONSTRUCTING.with(|s| s.set(true));
++            let e = make_error_1023(activation);
++            AVM2_ERROR_CONSTRUCTING.with(|s| s.set(false));
++            return Err(e);
++        }
++    };
++
+     let caller_dxns = activation.default_xml_namespace();
+ 
+     let ret = match method.method_kind() {
+diff --git a/core/src/display_object.rs b/core/src/display_object.rs
+index 64e3a3258..6e69b775f 100644
+--- a/core/src/display_object.rs
++++ b/core/src/display_object.rs
+@@ -31,7 +31,7 @@ use swf::{ColorTransform, Fixed8};
+ mod avm1_button;
+ mod avm2_button;
+ mod bitmap;
+-mod container;
++pub(crate) mod container;
+ mod edit_text;
+ mod graphic;
+ mod interactive;
+diff --git a/core/src/frame_lifecycle.rs b/core/src/frame_lifecycle.rs
+index 91bdb52df..2f4ef3831 100644
+--- a/core/src/frame_lifecycle.rs
++++ b/core/src/frame_lifecycle.rs
+@@ -13,6 +13,7 @@
+ 
+ use crate::avm2::{Avm2, EventObject};
+ use crate::context::UpdateContext;
++use crate::display_object::container::TDisplayObjectContainer;
+ use crate::display_object::{DisplayObject, MovieClip, TDisplayObject};
+ use crate::loader::LoadManager;
+ use crate::orphan_manager::OrphanManager;
+@@ -131,6 +132,23 @@ pub fn run_inner_goto_frame<'gc>(
+         // queued for our target frame.
+         initial_clip.base().set_skip_next_enter_frame(true);
+ 
++        // ★ MoleRuffle:version 9 的 AVM2 goto 原本直接 return,跳过了 construct_frame,
++        //   导致 run_goto 刚放置的子对象(如拉姆教室 CoursesPlan 的 tips)的 AVM2 槽没绑定,
++        //   帧脚本 frame2 访问 `tips.visible` 时拿到 null(Error #1009)→ 报错中断 →
++        //   字色没设(全黑)、布局没排(堆叠)、数据没填(999/9999 默认值)。
++        //   这里在返回前补跑 construct_frame,并**强制构造被 manual_frame_construct 守卫
++        //   跳过的子对象**(直接调 child.construct_frame),让 tips 等建出 AVM2 对象、
++        //   经 on_construction_complete → set_on_parent_field 绑上父槽。
++        let old_phase = *context.frame_phase;
++        *context.frame_phase = FramePhase::Construct;
++        initial_clip.construct_frame(context);
++        for child in initial_clip.iter_render_list() {
++            if child.object2().is_none() {
++                child.construct_frame(context);
++            }
++        }
++        *context.frame_phase = old_phase;
++
+         return;
+     }
+ 
+diff --git a/core/src/tessellation_cache.rs b/core/src/tessellation_cache.rs
+index cacd85384..d15a0db6e 100644
+--- a/core/src/tessellation_cache.rs
++++ b/core/src/tessellation_cache.rs
+@@ -8,6 +8,7 @@ const RETESSELLATION_SCALE_THRESHOLD: f32 = 2.0;
+ const RETESSELLATION_SCALE_THRESHOLD_INVERSE: f32 = 1.0 / RETESSELLATION_SCALE_THRESHOLD;
+ 
+ /// The maximum number of retessellated shapes to cache per original shape.
++/// ★ MoleRuffle:回退 4→2 的激进改动(实验:该改动可能加剧 Adreno GLES 驱动 memset 崩)。
+ const RETESSELLATION_CACHE_SIZE: usize = 4;
+ 
+ #[derive(Clone, Debug)]
+diff --git a/frontend-utils/src/backends/navigator.rs b/frontend-utils/src/backends/navigator.rs
+index 798dfe58e..747452b22 100644
+--- a/frontend-utils/src/backends/navigator.rs
++++ b/frontend-utils/src/backends/navigator.rs
+@@ -27,9 +27,239 @@ use tokio::net::TcpStream;
+ use tracing::warn;
+ use url::{ParseError, Url};
+ 
++/// MoleRuffle:正在下载中的 URL(并发去重用)。
++///   日志实锤:进餐厅时 `1340011.swf` 在**同一秒被请求了 4 次** —— 4 份同时下载、
++///   解析、跑 AS3 初始化,内存和时间线一起被拉爆,是闪退的高发点。
++///   这里让同一个 URL 只下载一次,其余等它落盘后直接读缓存。
++static INFLIGHT: Mutex<Option<HashSet<String>>> = Mutex::new(None);
++
++fn mole_inflight_contains(key: &str) -> bool {
++    let g = INFLIGHT.lock().unwrap();
++    g.as_ref().map_or(false, |s| s.contains(key))
++}
++
++fn mole_inflight_add(key: &str) {
++    let mut g = INFLIGHT.lock().unwrap();
++    g.get_or_insert_with(HashSet::new).insert(key.to_string());
++}
++
++fn mole_inflight_remove(key: &str) {
++    let mut g = INFLIGHT.lock().unwrap();
++    if let Some(s) = g.as_mut() {
++        s.remove(key);
++    }
++}
++
++/// 并发去重的 key —— 只对"会进缓存的静态资源"生效(与缓存文件名同规则)。
++fn mole_dedupe_key(url: &Url) -> Option<String> {
++    mole_cache_file(url).map(|p| p.to_string_lossy().to_string())
++}
++
++/// 命中缓存时的响应。
++fn mole_cached_response(url: &str, bytes: Vec<u8>) -> Box<dyn SuccessResponse> {
++    Box::new(Response {
++        url: url.to_string(),
++        response_body: ResponseBody::File(Ok(bytes)),
++        text_encoding: None,
++        status: 200,
++        redirected: false,
++    })
++}
++
++/// MoleRuffle:本地资源缓存的落盘路径。
++///
++/// 只缓存**游戏域下的静态资源**(swf/xml/mp3/图片)—— 这些才是"每次进场景都要重下"
++/// 的大头;不缓存 txt(配置/IP 会变)和统计脚本(每次都要上报)。
++/// 缓存目录由环境变量 `MOLE_CACHE_DIR` 给出(安卓端启动时指向应用私有目录);
++/// 没设置这个变量就完全不启用缓存,行为与官方一致。
++fn mole_cache_file(url: &Url) -> Option<std::path::PathBuf> {
++    use std::collections::hash_map::DefaultHasher;
++    use std::hash::{Hash, Hasher};
++
++    let dir = std::env::var("MOLE_CACHE_DIR").ok()?;
++    if dir.is_empty() {
++        return None;
++    }
++    let host = url.host_str().unwrap_or_default();
++    if !host.ends_with("mole.61player.com") {
++        return None;
++    }
++    let path = url.path();
++    let lower = path.to_ascii_lowercase();
++    let cacheable = [
++        ".swf", ".xml", ".mp3", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".swz",
++    ]
++    .iter()
++    .any(|ext| lower.ends_with(ext));
++    if !cacheable {
++        return None;
++    }
++    let mut h = DefaultHasher::new();
++    h.write(url.as_str().as_bytes());
++    let hash = h.finish();
++    // 文件名取路径里的安全字符(便于人工辨认)+ 完整 URL 的哈希(防重名/防碰撞)。
++    let stem: String = path
++        .chars()
++        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
++        .take(60)
++        .collect();
++    Some(
++        std::path::PathBuf::from(dir)
++            .join(format!("{stem}.{hash:x}")),
++    )
++}
++
++/// MoleRuffle:缓存上限(字节),由安卓端通过 JNI 设置(悬浮球菜单里可改 MB 数)。
++static CACHE_MAX_BYTES: std::sync::atomic::AtomicU64 =
++    std::sync::atomic::AtomicU64::new(512 * 1024 * 1024);
++/// 自上次容量检查以来累计写入的字节(超过阈值才去遍历目录,省掉每次 stat 全目录)。
++static CACHE_WRITTEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
++/// 设置缓存上限(MB)。
++pub fn mole_cache_set_limit_mb(mb: u64) {
++    CACHE_MAX_BYTES.store(
++        mb.saturating_mul(1024 * 1024),
++        std::sync::atomic::Ordering::Relaxed,
++    );
++}
++
++/// 按"最久未使用"淘汰,直到总大小 <= 上限。返回释放的字节数。
++pub fn mole_cache_trim(max_bytes: Option<u64>) -> u64 {
++    let dir = match std::env::var("MOLE_CACHE_DIR") {
++        Ok(d) if !d.is_empty() => std::path::PathBuf::from(d),
++        _ => return 0,
++    };
++    let max = max_bytes
++        .unwrap_or_else(|| CACHE_MAX_BYTES.load(std::sync::atomic::Ordering::Relaxed));
++    let Ok(entries) = std::fs::read_dir(&dir) else {
++        return 0;
++    };
++    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf, u64)> = Vec::new();
++    let mut total = 0u64;
++    for e in entries.flatten() {
++        let p = e.path();
++        // 元信息文件跟着 body 一起删,不单独计入总量。
++        if p.extension().and_then(|s| s.to_str()) == Some("meta") {
++            continue;
++        }
++        if let Ok(m) = e.metadata() {
++            if m.is_file() {
++                total += m.len();
++                files.push((m.modified().unwrap_or(std::time::UNIX_EPOCH), p, m.len()));
++            }
++        }
++    }
++    if total <= max {
++        return 0;
++    }
++    files.sort_by_key(|(t, _, _)| *t);
++    let mut freed = 0u64;
++    for (_, p, len) in files {
++        if total <= max {
++            break;
++        }
++        let meta = mole_cache_meta_path(&p);
++        let _ = std::fs::remove_file(&meta);
++        if std::fs::remove_file(&p).is_ok() {
++            freed += len;
++            total = total.saturating_sub(len);
++        }
++    }
++    tracing::warn!(
++        "MOLEFETCH 缓存超限,已按最久未用淘汰 {} KB(剩余 {} KB)",
++        freed / 1024,
++        total / 1024
++    );
++    freed
++}
++
++/// 写缓存后记账;累计写入超过 16 MB 才做一次容量检查(避免每次写都遍历目录)。
++fn mole_cache_account(len: u64) {
++    let written =
++        CACHE_WRITTEN.fetch_add(len, std::sync::atomic::Ordering::Relaxed) + len;
++    if written >= 16 * 1024 * 1024 {
++        CACHE_WRITTEN.store(0, std::sync::atomic::Ordering::Relaxed);
++        mole_cache_trim(None);
++    }
++}
++
++/// 缓存元信息文件:第 1 行 ETag、第 2 行 Last-Modified、第 3 行写入时间(unix 秒)。
++fn mole_cache_meta_path(p: &std::path::Path) -> std::path::PathBuf {
++    let mut s = p.as_os_str().to_os_string();
++    s.push(".meta");
++    std::path::PathBuf::from(s)
++}
++
++fn mole_now_secs() -> u64 {
++    std::time::SystemTime::now()
++        .duration_since(std::time::UNIX_EPOCH)
++        .map(|d| d.as_secs())
++        .unwrap_or(0)
++}
++
++/// 新鲜期(秒):缓存写入后这段时间内直接命中、完全不联网。
++///   过期后才带 ETag 去问服务器 —— 既快,又能在资源更新后自动刷新。
++fn mole_cache_ttl() -> u64 {
++    std::env::var("MOLE_CACHE_TTL")
++        .ok()
++        .and_then(|v| v.trim().parse::<u64>().ok())
++        .unwrap_or(6 * 3600)
++}
++
++fn mole_cache_fresh(meta: &std::path::Path, ttl: u64) -> bool {
++    if ttl == 0 {
++        return false;
++    }
++    let Ok(text) = std::fs::read_to_string(meta) else {
++        return false;
++    };
++    let saved = text
++        .lines()
++        .nth(2)
++        .and_then(|l| l.trim().parse::<u64>().ok())
++        .unwrap_or(0);
++    saved > 0 && mole_now_secs().saturating_sub(saved) < ttl
++}
++
++fn mole_cache_validators(meta: &std::path::Path) -> (Option<String>, Option<String>) {
++    let Ok(text) = std::fs::read_to_string(meta) else {
++        return (None, None);
++    };
++    let mut it = text.lines();
++    let etag = it.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
++    let lm = it.next().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
++    (etag, lm)
++}
++
++/// 命中缓存时刷新"最后使用时间"(LRU),严格按最久未用淘汰。
++fn mole_cache_touch(p: &std::path::Path) {
++    if let Ok(f) = std::fs::OpenOptions::new().write(true).open(p) {
++        let _ = f.set_modified(std::time::SystemTime::now());
++    }
++}
++
++/// 写 body + 元信息(ETag / Last-Modified / 写入时间)。
++fn mole_cache_store(
++    path: &std::path::Path,
++    bytes: &[u8],
++    etag: Option<&str>,
++    last_modified: Option<&str>,
++) {
++    if std::fs::write(path, bytes).is_ok() {
++        let meta = mole_cache_meta_path(path);
++        let content = format!(
++            "{}\n{}\n{}\n",
++            etag.unwrap_or(""),
++            last_modified.unwrap_or(""),
++            mole_now_secs()
++        );
++        let _ = std::fs::write(meta, content);
++        mole_cache_account(bytes.len() as u64);
++    }
++}
++
+ pub trait NavigatorInterface: Clone + Send + 'static {
+     fn navigate_to_website(&self, url: Url);
+-
+     fn open_file(&self, path: &Path) -> impl std::future::Future<Output = io::Result<File>> + Send;
+ 
+     fn confirm_socket(
+@@ -194,6 +424,32 @@ impl<F: FutureSpawner<Error> + 'static, I: NavigatorInterface> NavigatorBackend
+             }
+         };
+ 
++        // ★ MoleRuffle:官服登录服列表兜底 —— 官服的登录服务器 login.mole.61.com 的 HTTP 服务
++        //   已挂(80/443 都连不上),但游戏点「登录」要抓 login.mole.61.com/ip.txt 拿登录服地址,
++        //   拿不到就一直转圈、出不了选服界面。这里直接返回已知登录服地址(= 官服 Server.xml 的
++        //   RegistSer/Visitor,也和平行服 ip.txt 一致),让官服登录流程能走下去。
++        if processed_url.host_str() == Some("login.mole.61.com") {
++            let path = processed_url.path().to_string();
++            if path.ends_with("ip.txt") || path.ends_with("ip.txt/") {
++                let response_url = processed_url.clone();
++                let body: Vec<u8> = b"123.206.131.236:1863".to_vec();
++                warn!(
++                    "MOLEFETCH 官服登录服列表源已挂,返回兜底 {} -> {}",
++                    response_url,
++                    String::from_utf8_lossy(&body)
++                );
++                return Box::pin(async move {
++                    Ok(Box::new(Response {
++                        url: response_url.to_string(),
++                        response_body: ResponseBody::File(Ok(body)),
++                        text_encoding: None,
++                        status: 200,
++                        redirected: false,
++                    }) as Box<dyn SuccessResponse>)
++                });
++            }
++        }
++
+         let client = self.client.clone();
+ 
+         match processed_url.scheme() {
+@@ -228,6 +484,92 @@ impl<F: FutureSpawner<Error> + 'static, I: NavigatorInterface> NavigatorBackend
+                     error: Error::FetchError("Network unavailable".to_string()),
+                 })?;
+ 
++                // MoleRuffle:★ 本地资源缓存(带自动更新判断) + 并发去重。
++                //   顺序很关键:**新鲜缓存命中必须排在最前面**,命中就立刻返回、一点都不等;
++                //   去重只作用于"真要下载"的请求。
++                //   ① 新鲜期内(默认 6 小时)直接命中磁盘,完全不联网;
++                //   ② 过期后带 If-None-Match / If-Modified-Since 问一次服务器:
++                //      304 → 资源没变,继续用缓存;200 → 写新缓存(自动更新);
++                //   ③ 网络失败但有缓存 → 用缓存(断网也能进已去过的场景)。
++                let cache_file = mole_cache_file(&processed_url);
++                let mut cached: Option<Vec<u8>> = None;
++                if let Some(path) = cache_file.as_deref() {
++                    if let Ok(bytes) = std::fs::read(path) {
++                        if !bytes.is_empty() {
++                            cached = Some(bytes);
++                        }
++                    }
++                }
++                let meta = cache_file.as_deref().map(mole_cache_meta_path);
++                if cached.is_some() {
++                    let fresh = meta
++                        .as_deref()
++                        .map_or(false, |m| mole_cache_fresh(m, mole_cache_ttl()));
++                    let bytes = cached.take().unwrap_or_default();
++                    if !fresh {
++                        // ★ MoleRuffle:stale-while-revalidate —— 缓存过期也**立即返回**本地缓存,
++                        //   不再阻塞式逐个联网校验(否则家园/农场/背包/衣服场景元素一个个蹦出来:
++                        //   每个过期资源都阻塞 If-None-Match 校验 → 串行慢)。过期先用旧的。
++                        //   注意不 touch 时间戳(保留"过期"态,便于以后接后台校验更新)。
++                        tracing::info!(
++                            "MOLEFETCH 缓存过期但先用(stale-while-revalidate) {} ({} KB)",
++                            processed_url,
++                            bytes.len() / 1024
++                        );
++                    } else {
++                        if let Some(p) = cache_file.as_deref() {
++                            mole_cache_touch(p);
++                        }
++                        tracing::info!(
++                            "MOLEFETCH 缓存命中(新鲜) {} ({} KB)",
++                            processed_url,
++                            bytes.len() / 1024
++                        );
++                    }
++                    return Ok(Box::new(Response {
++                        url: processed_url.to_string(),
++                        response_body: ResponseBody::File(Ok(bytes)),
++                        text_encoding: None,
++                        status: 200,
++                        redirected: false,
++                    }) as Box<dyn SuccessResponse>);
++                }
++
++                // ── 并发去重(只对真要下载的请求生效)──
++                //   ★ 必须排在新鲜缓存命中**之后**:否则第一份命中缓存直接 return、
++                //     没摘掉"下载中"标记,后续同 URL 请求每次都白等满 5 秒
++                //     (主人日志实锤:一堆"并发去重命中 … 等了 5000ms",整体卡到崩)。
++                //   ★ 上限 5s → 1.2s:宁可自己再下一次,也不要干等。
++                let dedupe = mole_dedupe_key(&processed_url);
++                if let Some(key) = dedupe.as_deref() {
++                    let mut waited = 0u32;
++                    while mole_inflight_contains(key) && waited < 120 {
++                        Timer::after(Duration::from_millis(10)).await;
++                        waited += 1;
++                    }
++                    if waited > 0 {
++                        if let Some(p) = mole_cache_file(&processed_url) {
++                            if let Ok(bytes) = std::fs::read(&p) {
++                                if !bytes.is_empty() {
++                                    tracing::info!(
++                                        "MOLEFETCH 并发去重命中 {} ({} KB,等了 {}ms)",
++                                        processed_url,
++                                        bytes.len() / 1024,
++                                        waited * 10
++                                    );
++                                    return Ok(mole_cached_response(
++                                        &processed_url.to_string(),
++                                        bytes,
++                                    ));
++                                }
++                            }
++                        }
++                    }
++                    mole_inflight_add(key);
++                }
++
++                warn!("MOLEFETCH 请求 {}", processed_url);
++
+                 let mut request_builder = match request.method() {
+                     NavigationMethod::Get => client.get(processed_url.clone()),
+                     NavigationMethod::Post => client.post(processed_url.clone()),
+@@ -240,17 +582,95 @@ impl<F: FutureSpawner<Error> + 'static, I: NavigatorInterface> NavigatorBackend
+ 
+                 request_builder = request_builder.body(body_data);
+ 
+-                let response = spawn_tokio(request_builder.send()).await.map_err(|e| {
+-                    let inner = if e.is_connect() {
+-                        Error::InvalidDomain(processed_url.to_string())
+-                    } else {
+-                        Error::FetchError(e.to_string())
+-                    };
+-                    ErrorResponse {
+-                        url: processed_url.to_string(),
+-                        error: inner,
++                // 有旧缓存时带上条件头,让服务器告诉我们"变没变"。
++                if cached.is_some() {
++                    if let Some(m) = meta.as_deref() {
++                        let (etag, lm) = mole_cache_validators(m);
++                        if let Some(e) = etag {
++                            request_builder =
++                                request_builder.header(reqwest::header::IF_NONE_MATCH, e);
++                        }
++                        if let Some(l) = lm {
++                            request_builder =
++                                request_builder.header(reqwest::header::IF_MODIFIED_SINCE, l);
++                        }
+                     }
+-                })?;
++                }
++
++                let response = spawn_tokio(request_builder.send()).await;
++                // 无论成功失败,都要把"下载中"标记摘掉,否则同 URL 的后续请求会白等 5 秒。
++                if let Some(key) = dedupe.as_deref() {
++                    mole_inflight_remove(key);
++                }
++                // MoleRuffle:None = 抓取在完成前被取消(tokio 关闭/任务丢弃)→ 当网络失败处理。
++                let response = match response {
++                    Some(Ok(r)) => r,
++                    Some(Err(e)) => {
++                        // 网络失败但有缓存 → 用缓存,至少能把已去过的场景进去。
++                        if let Some(bytes) = cached.take() {
++                            warn!("MOLEFETCH 校验失败,改用缓存 {} -> {}", processed_url, e);
++                            return Ok(Box::new(Response {
++                                url: processed_url.to_string(),
++                                response_body: ResponseBody::File(Ok(bytes)),
++                                text_encoding: None,
++                                status: 200,
++                                redirected: false,
++                            }) as Box<dyn SuccessResponse>);
++                        }
++                        warn!("MOLEFETCH 异常 {} -> {}", processed_url, e);
++                        let inner = if e.is_connect() {
++                            Error::InvalidDomain(processed_url.to_string())
++                        } else {
++                            Error::FetchError(e.to_string())
++                        };
++                        return Err(ErrorResponse {
++                            url: processed_url.to_string(),
++                            error: inner,
++                        });
++                    }
++                    None => {
++                        // 请求被取消(未完成就被丢弃)→ 有缓存用缓存,否则报"被取消"。
++                        if let Some(bytes) = cached.take() {
++                            warn!("MOLEFETCH 请求被取消,改用缓存 {}", processed_url);
++                            return Ok(Box::new(Response {
++                                url: processed_url.to_string(),
++                                response_body: ResponseBody::File(Ok(bytes)),
++                                text_encoding: None,
++                                status: 200,
++                                redirected: false,
++                            }) as Box<dyn SuccessResponse>);
++                        }
++                        warn!("MOLEFETCH 请求被取消(runtime 关闭) {}", processed_url);
++                        return Err(ErrorResponse {
++                            url: processed_url.to_string(),
++                            error: Error::FetchError("请求被取消(runtime 关闭)".to_string()),
++                        });
++                    }
++                };
++
++                // 304 = 服务器上的资源没变 → 刷新缓存时间戳,继续用本地那份。
++                if response.status().as_u16() == 304 {
++                    if let (Some(bytes), Some(m)) = (cached.take(), meta.as_deref()) {
++                        let (etag, lm) = mole_cache_validators(m);
++                        let _ = std::fs::write(
++                            m,
++                            format!(
++                                "{}\n{}\n{}\n",
++                                etag.unwrap_or_default(),
++                                lm.unwrap_or_default(),
++                                mole_now_secs()
++                            ),
++                        );
++                        tracing::info!("MOLEFETCH 304 未修改,沿用缓存 {}", processed_url);
++                        return Ok(Box::new(Response {
++                            url: processed_url.to_string(),
++                            response_body: ResponseBody::File(Ok(bytes)),
++                            text_encoding: None,
++                            status: 200,
++                            redirected: false,
++                        }) as Box<dyn SuccessResponse>);
++                    }
++                }
+ 
+                 let url = response.url().to_string();
+                 let text_encoding = response
+@@ -261,6 +681,7 @@ impl<F: FutureSpawner<Error> + 'static, I: NavigatorInterface> NavigatorBackend
+                 let status = response.status().as_u16();
+                 let redirected = *response.url() != processed_url;
+                 if !response.status().is_success() {
++                    warn!("MOLEFETCH 非 2xx {} -> {}", url, response.status());
+                     let error = Error::HttpNotOk(
+                         format!("Got {}", response.status()),
+                         status,
+@@ -270,9 +691,59 @@ impl<F: FutureSpawner<Error> + 'static, I: NavigatorInterface> NavigatorBackend
+                     return Err(ErrorResponse { url, error });
+                 }
+ 
++                // ★ ETag / Last-Modified 必须在 response.bytes()(会消耗 response)之前取。
++                let new_etag = response
++                    .headers()
++                    .get(reqwest::header::ETAG)
++                    .and_then(|v| v.to_str().ok())
++                    .map(|s| s.to_string());
++                let new_last_modified = response
++                    .headers()
++                    .get(reqwest::header::LAST_MODIFIED)
++                    .and_then(|v| v.to_str().ok())
++                    .map(|s| s.to_string());
++
++                // MoleRuffle:取回完整字节 → 既能落缓存,也直接作为响应体返回
++                //   (省掉二次流式读取)。None = 读取在完成前被取消 → 报 FetchError。
++                let bytes = match spawn_tokio(response.bytes()).await {
++                    Some(Ok(b)) => b,
++                    Some(Err(e)) => {
++                        warn!("MOLEFETCH 读取失败 {} -> {}", url, e);
++                        return Err(ErrorResponse {
++                            url: url.clone(),
++                            error: Error::FetchError(e.to_string()),
++                        });
++                    }
++                    None => {
++                        warn!("MOLEFETCH 读取被取消(runtime 关闭) {}", url);
++                        return Err(ErrorResponse {
++                            url: url.clone(),
++                            error: Error::FetchError("读取被取消(runtime 关闭)".to_string()),
++                        });
++                    }
++                };
++                if let Some(path) = cache_file.as_deref() {
++                    mole_cache_store(
++                        path,
++                        &bytes,
++                        new_etag.as_deref(),
++                        new_last_modified.as_deref(),
++                    );
++                    tracing::info!(
++                        "MOLEFETCH 已缓存 {} ({} KB)",
++                        url,
++                        bytes.len() / 1024
++                    );
++                    tracing::debug!(
++                        "MOLEFETCH 已缓存 {} ({} KB)",
++                        url,
++                        bytes.len() / 1024
++                    );
++                }
++
+                 let response: Box<dyn SuccessResponse> = Box::new(Response {
+                     url,
+-                    response_body: ResponseBody::Network(Arc::new(Mutex::new(Some(response)))),
++                    response_body: ResponseBody::File(Ok(bytes.to_vec())),
+                     text_encoding,
+                     status,
+                     redirected,
+@@ -322,6 +793,7 @@ impl<F: FutureSpawner<Error> + 'static, I: NavigatorInterface> NavigatorBackend
+         }
+ 
+         let addr = format!("{host}:{port}");
++        warn!("MOLESOCK 尝试连接 {}:{}", host, port);
+         let is_allowed = self.socket_allowed.contains(&addr);
+         let socket_mode = self.socket_mode;
+         let interface = self.interface.clone();
+@@ -367,6 +839,7 @@ impl<F: FutureSpawner<Error> + 'static, I: NavigatorInterface> NavigatorBackend
+                     return;
+                 }
+                 Ok(stream) => {
++                    warn!("MOLESOCK 连接成功 {}:{}", host2, port);
+                     let action = SocketAction::Connect(handle, ConnectionState::Connected);
+                     if !send_action(&sender, action).await {
+                         return;
+@@ -472,16 +945,19 @@ impl<F: FutureSpawner<Error> + 'static, I: NavigatorInterface> NavigatorBackend
+ }
+ 
+ /// Spawns a new asynchronous task in a tokio runtime, without the current executor needing to belong to tokio
+-pub async fn spawn_tokio<F>(future: F) -> F::Output
++pub async fn spawn_tokio<F>(future: F) -> Option<F::Output>
+ where
+     F: Future + Send + 'static,
+     F::Output: Send + 'static,
+ {
+     let (sender, receiver) = tokio::sync::oneshot::channel();
+     tokio::spawn(async move { sender.send(future.await) });
+-    tokio::task::unconstrained(receiver)
+-        .await
+-        .expect("Oneshot should succeed")
++    // MoleRuffle:tokio 关闭 / 任务在完成前被取消时,sender 会没发送就被 drop。
++    //   之前这里 .expect("Oneshot should succeed") 会直接 panic —— 在「餐厅再刷一下 / 退出时
++    //   仍有未完成的 HTTP 抓取被丢弃」的场景必现,panic 再被 async_task 的
++    //   abort_on_panic::Bomb 升级成 abort(整机闪退)。改成返回 None(= 请求被取消),
++    //   由上层当作网络失败优雅降级(有缓存用缓存,否则报 FetchError)。
++    tokio::task::unconstrained(receiver).await.ok()
+ }
+ 
+ #[cfg(test)]
+diff --git a/render/wgpu/src/backend.rs b/render/wgpu/src/backend.rs
+index 5dcf43c0a..464c619a7 100644
+--- a/render/wgpu/src/backend.rs
++++ b/render/wgpu/src/backend.rs
+@@ -79,6 +79,11 @@ pub struct WgpuRenderBackend<T: RenderTarget> {
+     viewport_scale_factor: f64,
+     texture_pool: TexturePool,
+     offscreen_texture_pool: TexturePool,
++    // ★ MoleRuffle:fence-based 延迟回收队列 —— 每个退休的 TexturePool 带上"最后使用它的提交索引",
++    //   只有该提交的 GPU fence 真正 signal 后才 drop(避免"GPU 在用时释放"→ Adreno memset 崩)。
++    retire: std::collections::VecDeque<(wgpu::SubmissionIndex, TexturePool)>,
++    // ★ MoleRuffle:防内存泄漏 —— 主 texture_pool 周期性重置用的帧计数(见 submit_frame)。
++    frames_since_pool_reset: u32,
+     pub(crate) offscreen_buffer_pool: Arc<BufferPool<wgpu::Buffer, BufferDimensions>>,
+     dynamic_transforms: DynamicTransforms,
+     active_frame: ActiveFrame,
+@@ -276,6 +281,8 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
+             viewport_scale_factor: 1.0,
+             texture_pool: TexturePool::new(),
+             offscreen_texture_pool: TexturePool::new(),
++            retire: std::collections::VecDeque::new(),
++            frames_since_pool_reset: 0,
+             offscreen_buffer_pool: Arc::new(offscreen_buffer_pool),
+             dynamic_transforms: transforms,
+             active_frame,
+@@ -666,9 +673,41 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
+             .resolve_queries(&mut self.active_frame.command_encoder);
+         self.active_frame.staging_belt.finish();
+ 
+-        self.active_frame
++        let submission = self
++            .active_frame
+             .submit_for_target(&self.descriptors, &self.target, frame_output);
+-        self.offscreen_texture_pool = TexturePool::new();
++        // ★ MoleRuffle:fence-based 延迟回收 —— 不再靠"等几帧/poll 猜测",而是把退休的纹理池
++        //   绑定到它所属的提交索引,只有当该提交的 GPU fence 真正 signal(完成)后才 drop。
++        //   彻底避免"GPU 还在读时释放缓冲"→ Adreno GLES memset 坏地址崩(日志23/24),
++        //   同时不用每帧阻塞等 GPU(只在 fence 已过时才回收,CPU 不背拖累)。
++        //   1) 当前 offscreen 池退休(带本帧提交索引),换新池。
++        let retired = std::mem::replace(&mut self.offscreen_texture_pool, TexturePool::new());
++        self.retire.push_back((submission.clone(), retired));
++        //   2) 主 texture_pool 每 15 帧重置(防累积 OOM),旧池同样带提交索引退休。
++        self.frames_since_pool_reset += 1;
++        if self.frames_since_pool_reset >= 30 {
++            self.frames_since_pool_reset = 0;
++            let old = std::mem::replace(&mut self.texture_pool, TexturePool::new());
++            self.retire.push_back((submission.clone(), old));
++        }
++        //   3) 非阻塞精确回收:对队首提交做零超时 poll —— Ok=该提交 fence 已过,安全 drop;
++        //      Err(Timeout)=还在飞,保留等下次。
++        while let Some((idx, _)) = self.retire.front() {
++            let idx = idx.clone();
++            let done = self
++                .descriptors
++                .device
++                .poll(wgpu::PollType::Wait {
++                    submission_index: Some(idx),
++                    timeout: Some(std::time::Duration::ZERO),
++                })
++                .is_ok();
++            if done {
++                self.retire.pop_front();
++            } else {
++                break;
++            }
++        }
+         self.profiler
+             .end_frame()
+             .expect("Frame should end successfully");

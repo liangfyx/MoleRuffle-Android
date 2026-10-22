@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MoleRuffle:导出日志用的共享路径。
+     只暴露 filesDir/ruffle/shared_objects(mole.log 所在目录),不整包放开。 -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path
+        name="logs"
+        path="ruffle/shared_objects/" />
+</paths>

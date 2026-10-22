@@ -1,0 +1,22 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+.DS_Store
+
+# 平台壳产物
+/android/.gradle
+/android/app/build
+/android/local.properties
+/android/app/src/main/jniLibs
+/android/target
+/android/.externalNativeBuild
+/ios/build
+*.xcuserstate
+DerivedData/
+
+# 日志/临时
+*.log
+/scratch
+
+# xcodegen 生成的工程(可由 ios/project.yml 重新生成)
+ios/MoleRuffle.xcodeproj/

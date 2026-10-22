@@ -1,0 +1,60 @@
+diff --git a/core/src/avm2/function.rs b/core/src/avm2/function.rs
+index f6a511ef6..8c4a96ac2 100644
+--- a/core/src/avm2/function.rs
++++ b/core/src/avm2/function.rs
+@@ -1,6 +1,6 @@
+ use crate::avm2::Multiname;
+ use crate::avm2::activation::Activation;
+-use crate::avm2::error::{Error, make_error_1001};
++use crate::avm2::error::{Error, make_error_1001, make_error_1023};
+ use crate::avm2::method::{Method, MethodKind, ParamConfig};
+ use crate::avm2::object::{ClassObject, FunctionObject};
+ use crate::avm2::scope::ScopeChain;
+@@ -231,6 +231,34 @@ impl<'a, 'gc> DoubleEndedIterator for FunctionArgsIter<'a, 'gc> {
+ ///
+ /// It is the caller's responsibility to ensure that the `receiver` passed
+ /// to this method is not Value::Null or Value::Undefined.
++// ★ MoleRuffle:AVM2 方法调用递归深度守卫 —— 防止深/无限递归把 Rust 栈真的爆掉导致闪退。
++//   超过上限就抛 AVM2 Error #1023 "Stack overflow occurred."(与 Flash 行为一致),而不是真爆栈。
++//   实测某次崩溃在 170 层 AVM2 调用(512 个 Rust 帧)处爆栈,故上限取 128 层留安全余量
++//   (正常 AS3 递归极少超过 50~100 层)。
++thread_local! {
++    static AVM2_CALL_DEPTH: Cell<u32> = const { Cell::new(0) };
++}
++const MAX_AVM2_CALL_DEPTH: u32 = 128;
++
++struct CallDepthGuard;
++impl CallDepthGuard {
++    /// 进入一层调用;已达上限则返回 Err(不再加深)。
++    fn enter() -> Result<Self, ()> {
++        AVM2_CALL_DEPTH.with(|d| {
++            if d.get() >= MAX_AVM2_CALL_DEPTH {
++                return Err(());
++            }
++            d.set(d.get() + 1);
++            Ok(Self)
++        })
++    }
++}
++impl Drop for CallDepthGuard {
++    fn drop(&mut self) {
++        AVM2_CALL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
++    }
++}
++
+ pub fn exec<'gc>(
+     method: Method<'gc>,
+     scope: ScopeChain<'gc>,
+@@ -242,6 +270,12 @@ pub fn exec<'gc>(
+ ) -> Result<Value<'gc>, Error<'gc>> {
+     let mc = activation.gc();
+ 
++    // ★ MoleRuffle:递归守卫 —— 超上限抛 #1023,避免栈溢出闪退(见上方常量说明)。
++    let _call_depth = match CallDepthGuard::enter() {
++        Ok(g) => g,
++        Err(()) => return Err(make_error_1023(activation)),
++    };
++
+     let caller_dxns = activation.default_xml_namespace();
+ 
+     let ret = match method.method_kind() {
