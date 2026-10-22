@@ -24,6 +24,10 @@
 
 ---
 
+## 特别鸣谢
+
+- **平行摩尔 · 52 摩尔**（[mole.61player.com](https://mole.61player.com/)）—— 没有这个平行服，就无法进入怀旧版本的摩尔庄园。它还修复了大量官方文件缺失导致无法游玩的模式、无法看到的时装宠物等，让这款老游戏重新活了过来。**致敬他们让怀旧服的玩家还能回家。**
+
 ## 致谢
 
 - [**moleworld-dev/MoleRuffle**](https://github.com/moleworld-dev/MoleRuffle) —— 本项目的基础：Ruffle 原生客户端骨架、原生 TCP 直连、资源加载加固。**没有它就没有这个 Android 版**。
